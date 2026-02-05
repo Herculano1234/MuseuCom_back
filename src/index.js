@@ -103,6 +103,11 @@ app.get("/user", async (req, res) => {
   catch (err) { handleError(res, err); }
 });
 
+app.get("/", async (req, res) => {
+ res.send("Servidor rodando");
+});
+
+
 // Rota de login: valida email + senha
 app.post('/auth/login', async (req, res) => {
   try {
@@ -132,9 +137,16 @@ app.post('/auth/login', async (req, res) => {
       created_at: user.created_at
     };
 
+    // Log de depuração: não incluir senha
+    console.log(`[auth/login] success login for email=${email} userId=${user.id}`);
+
     // Gera JWT de acesso e refresh token; armazena refresh token no banco
-    const token = jwt.sign({ sub: user.id, role: safeUser.role }, JWT_SECRET, { expiresIn: '15m' });
-    const refreshToken = jwt.sign({ sub: user.id }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
+    // Normaliza o payload garantindo que o `sub` seja sempre uma string numérica
+    const accessPayload = { sub: String(user.id) };
+    // Log de depuração: emissão de tokens (remover em produção)
+    console.log(`[auth/login] issuing tokens for userId=${user.id}`);
+    const token = jwt.sign(accessPayload, JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ sub: String(user.id) }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
 
     // calcula expiry para o refresh (MySQL DATETIME no formato YYYY-MM-DD HH:MM:SS)
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -165,8 +177,9 @@ app.post('/auth/refresh', async (req, res) => {
     } catch (err) {
       return res.status(401).json({ error: 'Refresh token inválido ou expirado.' });
     }
-
-    const userId = payload.sub;
+    // Log payload do refresh token
+    console.log('[auth/refresh] refresh payload:', payload);
+    const userId = Number(payload.sub);
     const [rows] = await pool.query('SELECT id, user_id, revoked, expires_at FROM refresh_tokens WHERE token = ? LIMIT 1', [refreshToken]);
     if (!Array.isArray(rows) || rows.length === 0) return res.status(401).json({ error: 'Refresh token não encontrado.' });
     const row = rows[0];
@@ -181,11 +194,12 @@ app.post('/auth/refresh', async (req, res) => {
 
     // Rotaciona: marca o refresh token atual como revogado e cria um novo
     await pool.query('UPDATE refresh_tokens SET revoked = 1 WHERE id = ?', [row.id]);
-    const newRefreshToken = jwt.sign({ sub: user.id }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
+    console.log(`[auth/refresh] rotating refresh for userId=${user.id} (oldTokenId=${row.id})`);
+    const newRefreshToken = jwt.sign({ sub: String(user.id) }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
     const newExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0,19).replace('T',' ');
     await pool.query('INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)', [user.id, newRefreshToken, newExpiresAt]);
 
-    const newAccessToken = jwt.sign({ sub: user.id }, JWT_SECRET, { expiresIn: '15m' });
+    const newAccessToken = jwt.sign({ sub: String(user.id) }, JWT_SECRET, { expiresIn: '15m' });
 
     return res.json({ token: newAccessToken, refreshToken: newRefreshToken });
   } catch (err) {
@@ -219,7 +233,14 @@ function authenticateToken(req, res, next) {
   const token = parts[1];
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    req.user = payload; // payload.sub, payload.role
+    // Log do payload recebido (útil para depuração)
+    console.log('[auth] token payload:', payload);
+    // Normaliza o conteúdo do req.user para evitar ambiguidades (sempre ter id numérico)
+    req.user = {
+      sub: Number(payload.sub),
+      role: payload.role || null,
+    };
+    console.log(`[auth] set req.user.sub=${req.user.sub} role=${req.user.role}`);
     return next();
   } catch (err) {
     return res.status(401).json({ error: 'Token inválido ou expirado.' });
@@ -229,13 +250,15 @@ function authenticateToken(req, res, next) {
 // Rota protegida de exemplo: retorna informações do usuário logado
 app.get('/me', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user && req.user.sub;
-    if (!userId) return res.status(400).json({ error: 'Usuário inválido no token.' });
+    const userId = req.user && Number(req.user.sub);
+    console.log(`[GET /me] requested by userId=${userId}`);
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: 'Usuário inválido no token.' });
 
     const [rows] = await pool.query('SELECT id, nome, email, telefone, created_at FROM usuarios WHERE id = ?', [userId]);
     if (!Array.isArray(rows) || rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado.' });
 
     const u = rows[0];
+    console.log('[GET /me] returning user:', { id: u.id, email: u.email });
     return res.json({ id: u.id, nome: u.nome, email: u.email, telefone: u.telefone, created_at: u.created_at });
   } catch (err) {
     console.error('Erro em /me:', err);
