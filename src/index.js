@@ -119,10 +119,13 @@ app.post('/auth/login', async (req, res) => {
     const [rows] = await pool.query('SELECT id, nome, email, senha_hash, telefone, created_at FROM usuarios WHERE email = ?', [email]);
 
     if (!Array.isArray(rows) || rows.length === 0) {
+      console.log(`[auth/login] no user found for email=${email}`);
       return res.status(401).json({ error: 'Credenciais inválidas.' });
     }
 
     const user = rows[0];
+    // Log detalhado do usuário encontrado (NÃO logar senha)
+    console.log(`[auth/login] found user -> id=${user.id} nome=${user.nome} email=${user.email}`);
     const match = await bcrypt.compare(password, user.senha_hash);
     if (!match) {
       return res.status(401).json({ error: 'Credenciais inválidas.' });
@@ -138,13 +141,13 @@ app.post('/auth/login', async (req, res) => {
     };
 
     // Log de depuração: não incluir senha
-    console.log(`[auth/login] success login for email=${email} userId=${user.id}`);
+    console.log(`[auth/login] success login for email=${email} userId=${user.id} nome=${user.nome}`);
 
     // Gera JWT de acesso e refresh token; armazena refresh token no banco
     // Normaliza o payload garantindo que o `sub` seja sempre uma string numérica
     const accessPayload = { sub: String(user.id) };
     // Log de depuração: emissão de tokens (remover em produção)
-    console.log(`[auth/login] issuing tokens for userId=${user.id}`);
+    console.log(`[auth/login] issuing tokens for userId=${user.id} nome=${user.nome}`);
     const token = jwt.sign(accessPayload, JWT_SECRET, { expiresIn: '15m' });
     const refreshToken = jwt.sign({ sub: String(user.id) }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
 
@@ -157,6 +160,8 @@ app.post('/auth/login', async (req, res) => {
       console.error('Erro ao salvar refresh token:', dbErr);
     }
 
+    // Log payload de resposta (safe) antes de enviar
+    console.log('[auth/login] response payload:', { id: safeUser.id, nome: safeUser.nome, email: safeUser.email });
     return res.json({ ...safeUser, token, refreshToken });
   } catch (err) {
     console.error('Erro no login:', err);
