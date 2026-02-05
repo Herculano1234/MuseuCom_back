@@ -1,0 +1,16 @@
+# Pasta de dependências
+node_modules/
+
+# Arquivos de ambiente
+.env
+
+# Diretório de produção/build
+dist/
+
+# Logs e debug
+logs/
+*.log
+
+# Cache de IDEs
+.vscode/
+.idea/

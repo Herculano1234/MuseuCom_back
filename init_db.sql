@@ -1,0 +1,40 @@
+-- INÍCIO DO SCRIPT SQL PARA INICIALIZAÇÃO DO BANCO DE DADOS
+
+CREATE TABLE IF NOT EXISTS usuarios (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  nome VARCHAR(100) NOT NULL,
+  email VARCHAR(100) UNIQUE NOT NULL,
+ senha_hash VARCHAR(255) NOT NULL,
+  telefone VARCHAR(20),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+-- ===========================
+-- TABELA: Materiais
+-- ===========================
+CREATE TABLE IF NOT EXISTS materiais (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  nome VARCHAR(100) NOT NULL,
+  numero_serie VARCHAR(50) UNIQUE NOT NULL,
+  modelo VARCHAR(100),
+  fabricante VARCHAR(1000),
+  data_fabrico DATE,
+  infor_ad LONGTEXT,
+  perfil_fabricante LONGTEXT,
+  foto LONGTEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Tabela para armazenar refresh tokens (rotacionáveis)
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  token VARCHAR(512) NOT NULL UNIQUE,
+  revoked TINYINT(1) NOT NULL DEFAULT 0,
+  expires_at DATETIME NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_refresh_user FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- FIM DO SCRIPT SQL PARA INICIALIZAÇÃO DO BANCO DE DADOS
