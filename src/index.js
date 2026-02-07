@@ -94,6 +94,33 @@ app.post('/usuarios', async (req, res) => {
   }
 });
 
+app.get("/ma", async (req, res) => {
+  try {
+    // Listamos manualmente todas as colunas que queremos ver
+    // Isso ignora 'foto' e 'pdf'
+    const query = `
+      SELECT 
+        id, 
+        nome, 
+        numero_serie, 
+        modelo, 
+        fabricante, 
+        data_fabrico, 
+        infor_ad, 
+        perfil_fabricante, 
+        created_at 
+      FROM materiais 
+      ORDER BY id DESC
+    `;
+
+    const [rows] = await pool.query(query);
+    
+    // Retorna os dados (Ex: { "nome": "Router TP-Link", "modelo": "Archer C6", ... })
+    res.json(rows);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
 // Listar usuários (protegido: requer token válido)
 app.get('/usuarios', authenticateToken, async (req, res) => {
   try {
@@ -150,9 +177,36 @@ app.get("/materiais", async (req, res) => {
   }
 });
 
+// Dashboard: retorna contagens/indicadores simples usados pelo frontend
+// Rota `/dashboard` pública temporariamente para facilitar testes locais.
+app.get('/dashboard', async (req, res) => {
+  try {
+    // Total de usuários
+    const [[{ cnt: total_usuarios }]] = await pool.query("SELECT COUNT(*) AS cnt FROM usuarios");
+    // Total de materiais
+    const [[{ cnt: total_materiais }]] = await pool.query("SELECT COUNT(*) AS cnt FROM materiais");
+    // Empréstimos ativos (tabela pode não existir ainda) - tenta retornar 0 se não existir
+    let emprestimos_abertos = 0;
+    try {
+      const [[{ cnt }]] = await pool.query("SELECT COUNT(*) AS cnt FROM emprestimos WHERE status = 'aberto'");
+      emprestimos_abertos = Number(cnt || 0);
+    } catch (e) {
+      // tabela emprestimos não existe — ignora e deixa 0
+      emprestimos_abertos = 0;
+    }
+
+    return res.json({ total_usuarios: Number(total_usuarios || 0), total_materiais: Number(total_materiais || 0), emprestimos_abertos });
+  } catch (err) {
+    return handleError(res, err);
+  }
+});
+
 // Rota para cadastrar novo material (com upload de foto e pdf)
 app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
   try {
+    console.log('[POST /materiais] called by user:', req.user ? req.user.sub : 'anonymous');
+    console.log('[POST /materiais] body keys:', Object.keys(req.body || {}));
+    console.log('[POST /materiais] files keys:', Object.keys(req.files || {}));
     // campos textuais vêm em req.body
     const {
       nome,
