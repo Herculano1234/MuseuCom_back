@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import os from 'os';
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
 import bcrypt from "bcryptjs";
@@ -10,7 +11,8 @@ import { fileURLToPath } from "url";
 import multer from 'multer';
 dotenv.config();
 const app = express();
-app.use(cors());
+// Habilita CORS explicitamente. Defina ALLOWED_ORIGIN na produção para restringir.
+app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
 // Allow larger JSON bodies for non-file endpoints (safe moderate limit)
 app.use(express.json({ limit: '10mb' }));
 
@@ -46,23 +48,9 @@ function handleError(res, err) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Serve uploaded files (images, pdfs)
-const uploadDir = path.join(__dirname, '../uploads');
-fs.mkdirSync(uploadDir, { recursive: true });
-app.use('/uploads', express.static(uploadDir));
-
 // Multer setup for handling multipart/form-data (foto, pdf)
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    // prefix with timestamp to avoid collisions
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    cb(null, `${Date.now()}_${safeName}`);
-  }
-});
-
+// Use memory storage so files are available as buffers and can be stored in DB
+const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
 
 async function initDatabase() {
@@ -180,15 +168,19 @@ app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCoun
       return res.status(400).json({ error: 'Campos obrigatórios ausentes: nome e numero_serie.' });
     }
 
-    // Trata arquivos enviados
+    // Trata arquivos enviados (memória) e converte para data:URI base64 para salvar no DB
     const files = req.files || {};
-    let fotoUrl = null;
-    let pdfUrl = null;
-    if (files.foto && files.foto[0]) {
-      fotoUrl = `/uploads/${path.basename(files.foto[0].path)}`;
+    let fotoData = null;
+    let pdfData = null;
+    if (files.foto && files.foto[0] && files.foto[0].buffer) {
+      const f = files.foto[0];
+      const b64 = f.buffer.toString('base64');
+      fotoData = `data:${f.mimetype};base64,${b64}`;
     }
-    if (files.pdf && files.pdf[0]) {
-      pdfUrl = `/uploads/${path.basename(files.pdf[0].path)}`;
+    if (files.pdf && files.pdf[0] && files.pdf[0].buffer) {
+      const p = files.pdf[0];
+      const b64 = p.buffer.toString('base64');
+      pdfData = `data:${p.mimetype};base64,${b64}`;
     }
 
     // Converte ano_fabrico para data se necessário (usa 1º jan do ano)
@@ -204,7 +196,7 @@ app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCoun
 
     // Insere no banco
     const sql = `INSERT INTO materiais (nome, numero_serie, modelo, fabricante, data_fabrico, infor_ad, perfil_fabricante, foto, pdf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    const params = [nome, numero_serie, modelo || null, fabricante || null, data_fabrico || null, informacoes_adicionais || null, perfil_fabricante || null, fotoUrl, pdfUrl];
+    const params = [nome, numero_serie, modelo || null, fabricante || null, data_fabrico || null, informacoes_adicionais || null, perfil_fabricante || null, fotoData, pdfData];
     const [result] = await pool.query(sql, params);
 
     // Busca o registro criado para retornar
