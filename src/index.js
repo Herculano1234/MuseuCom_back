@@ -164,15 +164,30 @@ app.get("/tabelas", async (req, res) => {
     handleError(res, err);
   }
 });
-app.get("/materiais", async (req, res) => {
+// Lista materiais (metadados apenas) - EXCLUI campos grandes para evitar payloads enormes
+app.get('/materiais', async (req, res) => {
   try {
-    // Seleciona todos os campos da tabela materiais
-    const [rows] = await pool.query("SELECT * FROM materiais ORDER BY id DESC");
-    
-    // Retorna os dados em formato JSON
-    res.json(rows);
+    const query = `
+      SELECT id, nome AS nome_material, numero_serie, modelo, fabricante, infor_ad AS descricao, perfil_fabricante, created_at
+      FROM materiais
+      ORDER BY id DESC
+    `;
+    const [rows] = await pool.query(query);
+    res.json(Array.isArray(rows) ? rows : []);
   } catch (err) {
-    // Utiliza a sua função de tratamento de erro já existente
+    handleError(res, err);
+  }
+});
+
+// Rota para obter um material completo (inclui foto/pdf base64) quando necessário
+app.get('/materiais/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'ID inválido.' });
+    const [rows] = await pool.query('SELECT * FROM materiais WHERE id = ? LIMIT 1', [id]);
+    if (!Array.isArray(rows) || rows.length === 0) return res.status(404).json({ error: 'Material não encontrado.' });
+    return res.json(rows[0]);
+  } catch (err) {
     handleError(res, err);
   }
 });
@@ -260,8 +275,12 @@ app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCoun
     // Notificação: resposta clara para o front
     return res.status(201).json({ message: 'Material cadastrado com sucesso.', material: created });
   } catch (err) {
-    console.error('Erro ao cadastrar material:', err);
-    return res.status(500).json({ error: 'Erro ao cadastrar material.' });
+    console.error('Erro ao cadastrar material:', err && err.stack ? err.stack : err);
+    // Duplicate key (numero_serie) -> ER_DUP_ENTRY
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Número de série já cadastrado.' });
+    }
+    return res.status(500).json({ error: err && err.message ? String(err.message) : 'Erro ao cadastrar material.' });
   }
 });
 
