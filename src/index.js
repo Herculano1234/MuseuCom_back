@@ -7,6 +7,7 @@ import jwt from "jsonwebtoken";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import multer from 'multer';
 dotenv.config();
 const app = express();
 app.use(cors());
@@ -29,9 +30,40 @@ const pool = mysql.createPool({
   ssl: { rejectUnauthorized: false },
 });
 
+// Helper de tratamento de erros padronizado
+function handleError(res, err) {
+  console.error('Unhandled error:', err && (err.message || err));
+  try {
+    return res.status(500).json({ error: err && (err.message || String(err)) || 'Erro interno.' });
+  } catch (e) {
+    console.error('Falha ao enviar erro:', e);
+    // em último caso, apenas encerra
+    try { res.status(500).end(); } catch (_) {}
+  }
+}
+
 // Corrigir __dirname (pois em ES Modules ele não existe direto)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Serve uploaded files (images, pdfs)
+const uploadDir = path.join(__dirname, '../uploads');
+fs.mkdirSync(uploadDir, { recursive: true });
+app.use('/uploads', express.static(uploadDir));
+
+// Multer setup for handling multipart/form-data (foto, pdf)
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    // prefix with timestamp to avoid collisions
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    cb(null, `${Date.now()}_${safeName}`);
+  }
+});
+
+const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
 
 async function initDatabase() {
   try {
@@ -101,6 +133,90 @@ app.get('/usuarios/:id', authenticateToken, async (req, res) => {
 app.get("/user", async (req, res) => {
   try { const [rows] = await pool.query("SELECT * FROM usuarios ORDER BY id DESC"); res.json(rows); }
   catch (err) { handleError(res, err); }
+});
+app.get("/tabelas", async (req, res) => {
+  try {
+    const query = `
+      SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+      ORDER BY TABLE_NAME, ORDINAL_POSITION;
+    `;
+    
+    const [rows] = await pool.query(query);
+    res.json(rows);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+app.get("/materiais", async (req, res) => {
+  try {
+    // Seleciona todos os campos da tabela materiais
+    const [rows] = await pool.query("SELECT * FROM materiais ORDER BY id DESC");
+    
+    // Retorna os dados em formato JSON
+    res.json(rows);
+  } catch (err) {
+    // Utiliza a sua função de tratamento de erro já existente
+    handleError(res, err);
+  }
+});
+
+// Rota para cadastrar novo material (com upload de foto e pdf)
+app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
+  try {
+    // campos textuais vêm em req.body
+    const {
+      nome,
+      modelo,
+      fabricante,
+      ano_fabrico,
+      numero_serie,
+      perfil_fabricante,
+      informacoes_adicionais
+    } = req.body || {};
+
+    if (!nome || !numero_serie) {
+      return res.status(400).json({ error: 'Campos obrigatórios ausentes: nome e numero_serie.' });
+    }
+
+    // Trata arquivos enviados
+    const files = req.files || {};
+    let fotoUrl = null;
+    let pdfUrl = null;
+    if (files.foto && files.foto[0]) {
+      fotoUrl = `/uploads/${path.basename(files.foto[0].path)}`;
+    }
+    if (files.pdf && files.pdf[0]) {
+      pdfUrl = `/uploads/${path.basename(files.pdf[0].path)}`;
+    }
+
+    // Converte ano_fabrico para data se necessário (usa 1º jan do ano)
+    let data_fabrico = null;
+    if (ano_fabrico) {
+      // se já for uma data, tenta usar; se for apenas ano, cria uma data YYYY-01-01
+      if (/^\d{4}$/.test(String(ano_fabrico))) {
+        data_fabrico = `${ano_fabrico}-01-01`;
+      } else {
+        data_fabrico = ano_fabrico;
+      }
+    }
+
+    // Insere no banco
+    const sql = `INSERT INTO materiais (nome, numero_serie, modelo, fabricante, data_fabrico, infor_ad, perfil_fabricante, foto, pdf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const params = [nome, numero_serie, modelo || null, fabricante || null, data_fabrico || null, informacoes_adicionais || null, perfil_fabricante || null, fotoUrl, pdfUrl];
+    const [result] = await pool.query(sql, params);
+
+    // Busca o registro criado para retornar
+    const [rows] = await pool.query('SELECT * FROM materiais WHERE id = ? LIMIT 1', [result.insertId]);
+    const created = Array.isArray(rows) && rows.length ? rows[0] : null;
+
+    // Notificação: resposta clara para o front
+    return res.status(201).json({ message: 'Material cadastrado com sucesso.', material: created });
+  } catch (err) {
+    console.error('Erro ao cadastrar material:', err);
+    return res.status(500).json({ error: 'Erro ao cadastrar material.' });
+  }
 });
 
 app.get("/", async (req, res) => {
