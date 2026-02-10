@@ -179,6 +179,19 @@ app.get('/materiais', async (req, res) => {
   }
 });
 
+// Busca material pelo número de série (retorna registro completo com foto/pdf)
+app.get('/materiais/serie/:numero_serie', async (req, res) => {
+  try {
+    const numero = String(req.params.numero_serie || '').trim();
+    if (!numero) return res.status(400).json({ error: 'Número de série ausente.' });
+    const [rows] = await pool.query('SELECT * FROM materiais WHERE numero_serie = ? LIMIT 1', [numero]);
+    if (!Array.isArray(rows) || rows.length === 0) return res.status(404).json({ error: 'Material não encontrado.' });
+    return res.json(rows[0]);
+  } catch (err) {
+    return handleError(res, err);
+  }
+});
+
 // Rota para obter um material completo (inclui foto/pdf base64) quando necessário
 app.get('/materiais/:id', async (req, res) => {
   try {
