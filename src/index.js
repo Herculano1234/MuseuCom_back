@@ -177,7 +177,7 @@ app.get('/materiais', async (req, res) => {
     const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM materiais');
 
     const query = `
-      SELECT id, nome AS nome_material, numero_serie, modelo, fabricante, infor_ad AS descricao, perfil_fabricante, created_at
+      SELECT id, nome AS nome_material, numero_serie, modelo, fabricante, infor_ad AS descricao, perfil_fabricante, foto, created_at
       FROM materiais
       ORDER BY id DESC
       LIMIT ? OFFSET ?
