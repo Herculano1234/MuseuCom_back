@@ -245,6 +245,56 @@ app.get('/dashboard', async (req, res) => {
   }
 });
 
+// Estatísticas agregadas para dashboard (charts)
+app.get('/stats', async (req, res) => {
+  try {
+    // Materials per month (last 12 months)
+    const matsByMonthQuery = `
+      SELECT DATE_FORMAT(created_at, '%Y-%m') AS month, COUNT(*) AS cnt
+      FROM materiais
+      GROUP BY month
+      ORDER BY month DESC
+      LIMIT 12
+    `;
+    const [matsByMonthRows] = await pool.query(matsByMonthQuery);
+
+    // Materials by fabricante
+    const matsByFabQuery = `
+      SELECT COALESCE(fabricante, 'Desconhecido') AS fabricante, COUNT(*) AS cnt
+      FROM materiais
+      GROUP BY fabricante
+      ORDER BY cnt DESC
+      LIMIT 12
+    `;
+    const [matsByFabRows] = await pool.query(matsByFabQuery);
+
+    // Try loans per month (may not exist)
+    let loansByMonthRows = [];
+    try {
+      const loansQuery = `
+        SELECT DATE_FORMAT(created_at, '%Y-%m') AS month, COUNT(*) AS cnt
+        FROM emprestimos
+        GROUP BY month
+        ORDER BY month DESC
+        LIMIT 12
+      `;
+      const [rows] = await pool.query(loansQuery);
+      loansByMonthRows = rows;
+    } catch (e) {
+      // ignore if table doesn't exist
+      loansByMonthRows = [];
+    }
+
+    return res.json({
+      materials_by_month: Array.isArray(matsByMonthRows) ? matsByMonthRows : [],
+      materials_by_fabricante: Array.isArray(matsByFabRows) ? matsByFabRows : [],
+      loans_by_month: Array.isArray(loansByMonthRows) ? loansByMonthRows : [],
+    });
+  } catch (err) {
+    return handleError(res, err);
+  }
+});
+
 // Rota para cadastrar novo material (com upload de foto e pdf)
 app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
   try {
