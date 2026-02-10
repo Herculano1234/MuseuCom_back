@@ -165,15 +165,31 @@ app.get("/tabelas", async (req, res) => {
   }
 });
 // Lista materiais (metadados apenas) - EXCLUI campos grandes para evitar payloads enormes
+// Lista materiais (metadados apenas) - EXCLUI campos grandes para evitar payloads enormes
+// Suporta paginação via query params: ?page=1&limit=24
 app.get('/materiais', async (req, res) => {
   try {
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+    const limit = Math.max(1, Math.min(200, parseInt(String(req.query.limit || '24'), 10) || 24));
+    const offset = (page - 1) * limit;
+
+    // Total de registros para paginação
+    const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM materiais');
+
     const query = `
       SELECT id, nome AS nome_material, numero_serie, modelo, fabricante, infor_ad AS descricao, perfil_fabricante, created_at
       FROM materiais
       ORDER BY id DESC
+      LIMIT ? OFFSET ?
     `;
-    const [rows] = await pool.query(query);
-    res.json(Array.isArray(rows) ? rows : []);
+
+    const [rows] = await pool.query(query, [limit, offset]);
+
+    const items = Array.isArray(rows) ? rows : [];
+    const totalNum = Number(total || 0);
+    const totalPages = Math.max(1, Math.ceil(totalNum / limit));
+
+    return res.json({ items, meta: { total: totalNum, page, limit, totalPages } });
   } catch (err) {
     handleError(res, err);
   }
