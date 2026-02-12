@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS materiais (
   perfil_fabricante LONGTEXT,
   foto LONGTEXT,
   pdf LONGTEXT,
-  foto_thumb LONGTEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

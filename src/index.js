@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import compression from 'compression';
 import os from 'os';
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
@@ -8,7 +7,6 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import fs from "fs";
 import path from "path";
-import sharp from 'sharp';
 import { fileURLToPath } from "url";
 import multer from 'multer';
 dotenv.config();
@@ -17,9 +15,6 @@ const app = express();
 app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
 // Allow larger JSON bodies for non-file endpoints (safe moderate limit)
 app.use(express.json({ limit: '10mb' }));
-
-// Enable HTTP response compression to reduce size of large JSON (e.g., base64 images)
-app.use(compression());
 
 // --------------------
 // MySQL (Aiven) Pool
@@ -67,74 +62,9 @@ async function initDatabase() {
     console.log("🟢 Inicializando o banco de dados...");
     await pool.query(sql);
     
-    // Ensure `foto_thumb` column exists to store generated thumbnails
-    try {
-      await pool.query("ALTER TABLE materiais ADD COLUMN IF NOT EXISTS foto_thumb LONGTEXT");
-      console.log('✅ coluna foto_thumb verificada/criada');
-    } catch (e) {
-      console.warn('⚠️ Não foi possível criar/verificar coluna foto_thumb automaticamente:', e && e.message ? e.message : e);
-    }
-
     console.log("✅ Banco de dados inicializado com sucesso!");
   } catch (err) {
     console.error("❌ Erro ao inicializar o banco de dados:", err.message);
-  }
-}
-
-// Helper: parse data-url -> { mime, buffer }
-function parseDataURL(dataUrl) {
-  if (!dataUrl || typeof dataUrl !== 'string') return null;
-  const match = dataUrl.match(/^data:(.+);base64,(.*)$/);
-  if (!match) return null;
-  const mime = match[1];
-  const b64 = match[2];
-  const buf = Buffer.from(b64, 'base64');
-  return { mime, buffer: buf };
-}
-
-// Create thumbnail buffer (JPEG) from image buffer
-async function makeThumbnailBuffer(buf, maxWidth = 400) {
-  try {
-    const thumb = await sharp(buf)
-      .resize({ width: maxWidth, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 72 })
-      .toBuffer();
-    return thumb;
-  } catch (e) {
-    console.error('Erro ao gerar thumbnail:', e && e.message ? e.message : e);
-    return null;
-  }
-}
-
-// Generate thumbnail data URI from data URL input
-async function generateThumbnailDataURL(dataUrl) {
-  const parsed = parseDataURL(dataUrl);
-  if (!parsed) return null;
-  const thumbBuf = await makeThumbnailBuffer(parsed.buffer, 400);
-  if (!thumbBuf) return null;
-  const b64 = thumbBuf.toString('base64');
-  return `data:image/jpeg;base64,${b64}`;
-}
-
-// Scan DB for records with foto and no foto_thumb and generate thumbnails (runs at startup)
-async function generateMissingThumbnails() {
-  try {
-    const [rows] = await pool.query("SELECT id, foto FROM materiais WHERE foto IS NOT NULL AND (foto_thumb IS NULL OR foto_thumb = '') LIMIT 200");
-    if (!Array.isArray(rows) || rows.length === 0) return;
-    console.log(`🔧 Gerando thumbnails para ${rows.length} materiais...`);
-    for (const r of rows) {
-      try {
-        const thumb = await generateThumbnailDataURL(r.foto);
-        if (thumb) {
-          await pool.query('UPDATE materiais SET foto_thumb = ? WHERE id = ?', [thumb, r.id]);
-        }
-      } catch (e) {
-        console.warn('Falha ao gerar thumbnail para id=' + r.id, e && e.message ? e.message : e);
-      }
-    }
-    console.log('🔧 Thumbnails gerados (startup pass)');
-  } catch (e) {
-    console.error('Erro ao gerar thumbnails em lote:', e && e.message ? e.message : e);
   }
 }
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 4000;
@@ -246,18 +176,8 @@ app.get('/materiais', async (req, res) => {
     // Total de registros para paginação
     const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM materiais');
 
-    // Include `foto` in the list as requested. Keep a short description for list view.
     const query = `
-      SELECT 
-        id,
-        nome AS nome_material,
-        numero_serie,
-        modelo,
-        fabricante,
-        SUBSTRING(infor_ad, 1, 400) AS descricao,
-        perfil_fabricante,
-        COALESCE(foto_thumb, foto) AS foto,
-        created_at
+      SELECT id, nome AS nome_material, numero_serie, modelo, fabricante, infor_ad AS descricao, perfil_fabricante, foto, created_at
       FROM materiais
       ORDER BY id DESC
       LIMIT ? OFFSET ?
@@ -399,19 +319,11 @@ app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCoun
     // Trata arquivos enviados (memória) e converte para data:URI base64 para salvar no DB
     const files = req.files || {};
     let fotoData = null;
-    let fotoThumb = null;
     let pdfData = null;
     if (files.foto && files.foto[0] && files.foto[0].buffer) {
       const f = files.foto[0];
       const b64 = f.buffer.toString('base64');
       fotoData = `data:${f.mimetype};base64,${b64}`;
-      // Gera thumbnail (async)
-      try {
-        const thumb = await generateThumbnailDataURL(fotoData);
-        if (thumb) fotoThumb = thumb;
-      } catch (e) {
-        console.warn('Não foi possível gerar thumbnail no POST:', e && e.message ? e.message : e);
-      }
     }
     if (files.pdf && files.pdf[0] && files.pdf[0].buffer) {
       const p = files.pdf[0];
@@ -431,8 +343,8 @@ app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCoun
     }
 
     // Insere no banco
-    const sql = `INSERT INTO materiais (nome, numero_serie, modelo, fabricante, data_fabrico, infor_ad, perfil_fabricante, foto, foto_thumb, pdf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    const params = [nome, numero_serie, modelo || null, fabricante || null, data_fabrico || null, informacoes_adicionais || null, perfil_fabricante || null, fotoData, fotoThumb, pdfData];
+    const sql = `INSERT INTO materiais (nome, numero_serie, modelo, fabricante, data_fabrico, infor_ad, perfil_fabricante, foto, pdf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const params = [nome, numero_serie, modelo || null, fabricante || null, data_fabrico || null, informacoes_adicionais || null, perfil_fabricante || null, fotoData, pdfData];
     const [result] = await pool.query(sql, params);
 
     // Busca o registro criado para retornar
@@ -465,24 +377,6 @@ app.put('/materiais/:id', authenticateToken, async (req, res) => {
       if (Object.prototype.hasOwnProperty.call(req.body, key)) {
         updates.push(`${key} = ?`);
         params.push(req.body[key] === '' ? null : req.body[key]);
-      }
-    }
-
-    // If foto is provided in the update payload, generate a new thumbnail and include it
-    if (Object.prototype.hasOwnProperty.call(req.body, 'foto')) {
-      try {
-        const newFoto = req.body.foto;
-        if (newFoto) {
-          const newThumb = await generateThumbnailDataURL(newFoto);
-          updates.push('foto_thumb = ?');
-          params.push(newThumb);
-        } else {
-          // clearing foto -> clear thumbnail
-          updates.push('foto_thumb = ?');
-          params.push(null);
-        }
-      } catch (e) {
-        console.warn('Falha ao gerar thumbnail durante UPDATE:', e && e.message ? e.message : e);
       }
     }
 
@@ -677,12 +571,6 @@ app.get('/me', authenticateToken, async (req, res) => {
 (async () => {
   try {
     await initDatabase();
-    // After DB init, generate missing thumbnails in background (blocking startup until done)
-    try {
-      await generateMissingThumbnails();
-    } catch (e) {
-      console.warn('Erro ao gerar thumbnails no startup:', e && e.message ? e.message : e);
-    }
   } catch (err) {
     console.warn('Continuando sem bloqueio mesmo se initDatabase falhar.');
   }
