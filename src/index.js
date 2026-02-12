@@ -176,8 +176,19 @@ app.get('/materiais', async (req, res) => {
     // Total de registros para paginação
     const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM materiais');
 
+    // Note: exclude `foto` and `pdf` (large payloads) from list responses.
+    // Provide a short description and a boolean `has_foto` to indicate presence of media.
     const query = `
-      SELECT id, nome AS nome_material, numero_serie, modelo, fabricante, infor_ad AS descricao, perfil_fabricante, foto, created_at
+      SELECT 
+        id,
+        nome AS nome_material,
+        numero_serie,
+        modelo,
+        fabricante,
+        SUBSTRING(infor_ad, 1, 400) AS descricao,
+        perfil_fabricante,
+        (foto IS NOT NULL AND foto <> '') AS has_foto,
+        created_at
       FROM materiais
       ORDER BY id DESC
       LIMIT ? OFFSET ?
@@ -360,6 +371,42 @@ app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCoun
       return res.status(409).json({ error: 'Número de série já cadastrado.' });
     }
     return res.status(500).json({ error: err && err.message ? String(err.message) : 'Erro ao cadastrar material.' });
+  }
+});
+
+// Atualizar material por id (aceita JSON com campos a atualizar)
+app.put('/materiais/:id', authenticateToken, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'ID inválido.' });
+
+    // Aceita payload JSON com quaisquer colunas permitidas
+    const allowed = ['nome','numero_serie','modelo','fabricante','data_fabrico','infor_ad','perfil_fabricante','foto','pdf'];
+    const updates = [];
+    const params = [];
+    for (const key of allowed) {
+      if (Object.prototype.hasOwnProperty.call(req.body, key)) {
+        updates.push(`${key} = ?`);
+        params.push(req.body[key] === '' ? null : req.body[key]);
+      }
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'Nenhum campo para atualizar.' });
+    }
+
+    params.push(id);
+    const sql = `UPDATE materiais SET ${updates.join(', ')} WHERE id = ?`;
+    const [result] = await pool.query(sql, params);
+
+    // retorna registro atualizado
+    const [rows] = await pool.query('SELECT * FROM materiais WHERE id = ? LIMIT 1', [id]);
+    if (!Array.isArray(rows) || rows.length === 0) return res.status(404).json({ error: 'Material não encontrado.' });
+    return res.json({ message: 'Atualizado com sucesso.', material: rows[0] });
+  } catch (err) {
+    console.error('Erro ao atualizar material:', err && err.stack ? err.stack : err);
+    if (err && err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Número de série já cadastrado.' });
+    return handleError(res, err);
   }
 });
 
