@@ -247,45 +247,29 @@ app.get('/materiais', async (req, res) => {
     const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM materiais');
 
     // Include `foto` in the list as requested. Keep a short description for list view.
-        const query = `
-          SELECT 
-            id,
-            nome AS nome_material,
-            numero_serie,
-            modelo,
-            fabricante,
-            SUBSTRING(infor_ad, 1, 400) AS descricao,
-            perfil_fabricante,
-            (foto_thumb IS NOT NULL AND foto_thumb <> '') OR (foto IS NOT NULL AND foto <> '') AS has_image,
-            created_at
-          FROM materiais
-          ORDER BY id DESC
-          LIMIT ? OFFSET ?
-        `;
+    const query = `
+      SELECT 
+        id,
+        nome AS nome_material,
+        numero_serie,
+        modelo,
+        fabricante,
+        SUBSTRING(infor_ad, 1, 400) AS descricao,
+        perfil_fabricante,
+        COALESCE(foto_thumb, foto) AS foto,
+        created_at
+      FROM materiais
+      ORDER BY id DESC
+      LIMIT ? OFFSET ?
+    `;
 
-        const [rows] = await pool.query(query, [limit, offset]);
+    const [rows] = await pool.query(query, [limit, offset]);
 
-        const items = Array.isArray(rows) ? rows : [];
-        const totalNum = Number(total || 0);
-        const totalPages = Math.max(1, Math.ceil(totalNum / limit));
+    const items = Array.isArray(rows) ? rows : [];
+    const totalNum = Number(total || 0);
+    const totalPages = Math.max(1, Math.ceil(totalNum / limit));
 
-        // Map rows to include `foto` as a URL to the thumb endpoint when image exists
-        const hostBase = req.protocol + '://' + req.get('host');
-        for (const it of items) {
-          try {
-            if (it.has_image) {
-              it.foto = `${hostBase}/materiais/${it.id}/thumb`;
-            } else {
-              it.foto = null;
-            }
-            // remove helper flag from response
-            delete it.has_image;
-          } catch (e) {
-            // ignore mapping errors
-          }
-        }
-
-        return res.json({ items, meta: { total: totalNum, page, limit, totalPages } });
+    return res.json({ items, meta: { total: totalNum, page, limit, totalPages } });
   } catch (err) {
     handleError(res, err);
   }
@@ -301,40 +285,6 @@ app.get('/materiais/serie/:numero_serie', async (req, res) => {
     return res.json(rows[0]);
   } catch (err) {
     return handleError(res, err);
-  }
-});
-
-// Serve thumbnail (or fallback to full foto) as binary image with caching headers
-app.get('/materiais/:id/thumb', async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ error: 'ID inválido.' });
-    const [rows] = await pool.query('SELECT foto_thumb, foto FROM materiais WHERE id = ? LIMIT 1', [id]);
-    if (!Array.isArray(rows) || rows.length === 0) return res.status(404).json({ error: 'Material não encontrado.' });
-    const row = rows[0];
-    const dataUrl = row.foto_thumb || row.foto;
-    if (!dataUrl) return res.status(404).json({ error: 'Imagem não encontrada.' });
-    const parsed = parseDataURL(dataUrl);
-    if (!parsed) return res.status(500).json({ error: 'Formato de imagem inválido.' });
-    const buf = parsed.buffer;
-    const mime = parsed.mime || 'application/octet-stream';
-
-    // ETag based on sha1 of the content
-    const etag = crypto.createHash('sha1').update(buf).digest('hex');
-    res.setHeader('Content-Type', mime);
-    res.setHeader('Content-Length', buf.length);
-    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
-    res.setHeader('ETag', etag);
-
-    // Handle conditional requests
-    if (req.headers['if-none-match'] === etag) {
-      return res.status(304).end();
-    }
-
-    return res.send(buf);
-  } catch (err) {
-    console.error('Erro ao servir thumb:', err && (err.message || err));
-    return res.status(500).json({ error: 'Erro ao servir imagem.' });
   }
 });
 
