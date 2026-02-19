@@ -70,6 +70,76 @@ async function initDatabase() {
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'please_change_this_secret';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'please_change_this_refresh_secret';
+
+
+app.post('/materiais/automacao', upload.fields([{ name: 'pdf', maxCount: 1 }]), async (req, res) => {
+  try {
+    const { nome, modelo, fabricante, ano_fabrico, numero_serie, perfil_fabricante, informacoes_adicionais } = req.body;
+
+    // 1. Tratamento do Ano (Extração do primeiro ano encontrado)
+    let dataFormatada = null;
+    if (ano_fabrico) {
+      const match = ano_fabrico.toString().match(/\d{4}/);
+      if (match) {
+        dataFormatada = `${match[0]}-01-01`;
+      }
+    }
+
+    // 2. Lógica para Número de Série Único
+    let finalSerialNumber = numero_serie;
+
+    // Função interna para verificar existência
+    const checkIfExists = async (serial) => {
+      const [rows] = await pool.query('SELECT id FROM materiais WHERE numero_serie = ?', [serial]);
+      return rows.length > 0;
+    };
+
+    // Se não enviaram número de série ou se o enviado já existir, gera um novo
+    if (!finalSerialNumber || await checkIfExists(finalSerialNumber)) {
+      let isDuplicate = true;
+      while (isDuplicate) {
+        // Gera um serial aleatório (Ex: SN-12345678)
+        const randomID = Math.floor(10000000 + Math.random() * 90000000);
+        finalSerialNumber = `SN-${randomID}`;
+        
+        // Verifica se o novo serial gerado aleatoriamente também já existe
+        isDuplicate = await checkIfExists(finalSerialNumber);
+      }
+    }
+
+    // 3. Tratamento do PDF
+    let pdfData = null;
+    if (req.files?.pdf?.[0]) {
+      pdfData = `data:${req.files.pdf[0].mimetype};base64,${req.files.pdf[0].buffer.toString('base64')}`;
+    }
+
+    // 4. Inserção no Banco
+    const sql = `INSERT INTO materiais (nome, numero_serie, modelo, fabricante, data_fabrico, infor_ad, perfil_fabricante, foto, pdf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    
+    const [result] = await pool.query(sql, [
+      nome, 
+      finalSerialNumber, 
+      modelo, 
+      fabricante, 
+      dataFormatada, 
+      informacoes_adicionais, 
+      perfil_fabricante, 
+      null, 
+      pdfData
+    ]);
+
+    res.status(201).json({ 
+      message: 'Cadastrado via Automação!', 
+      id: result.insertId,
+      numero_serie_utilizado: finalSerialNumber 
+    });
+
+  } catch (err) {
+    console.error("Erro no Backend:", err);
+    res.status(500).json({ error: err.message + " - erro vindo do back" });
+  }  
+});
+ 
 // Rota para criar usuários (tabela `usuarios`)
 app.post('/usuarios', async (req, res) => {
   try {
