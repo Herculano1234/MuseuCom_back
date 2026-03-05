@@ -239,21 +239,46 @@ app.get("/tabelas", async (req, res) => {
 // Suporta paginação via query params: ?page=1&limit=24
 app.get('/materiais', async (req, res) => {
   try {
+    // parametros de paginação básicos
     const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
     const limit = Math.max(1, Math.min(200, parseInt(String(req.query.limit || '24'), 10) || 24));
     const offset = (page - 1) * limit;
 
-    // Total de registros para paginação
-    const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM materiais');
+    // suporte a pesquisa por termo (nome, numero_serie, fabricante)
+    const search = String(req.query.search || '').trim();
+    let whereClause = '';
+    const params = [];
+    if (search) {
+      whereClause = `WHERE nome LIKE ? OR numero_serie LIKE ? OR fabricante LIKE ?`;
+      const like = `%${search}%`;
+      params.push(like, like, like);
+    }
+
+    // suporte a filtro exato por fabricante (opcional)
+    const fabricanteFilter = String(req.query.fabricante || '').trim();
+    if (fabricanteFilter) {
+      if (whereClause) {
+        whereClause += ' AND fabricante = ?';
+      } else {
+        whereClause = 'WHERE fabricante = ?';
+      }
+      params.push(fabricanteFilter);
+    }
+
+    // Total de registros para paginação (considerando filtro)
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM materiais ${whereClause}`, params);
 
     const query = `
       SELECT id, nome AS nome_material, numero_serie, modelo, fabricante, infor_ad AS descricao, perfil_fabricante, foto, created_at
       FROM materiais
+      ${whereClause}
       ORDER BY id DESC
       LIMIT ? OFFSET ?
     `;
 
-    const [rows] = await pool.query(query, [limit, offset]);
+    // adiciona limites aos parâmetros finais
+    params.push(limit, offset);
+    const [rows] = await pool.query(query, params);
 
     const items = Array.isArray(rows) ? rows : [];
     const totalNum = Number(total || 0);
@@ -279,13 +304,39 @@ app.get('/materiais/serie/:numero_serie', async (req, res) => {
 });
 
 // Rota para obter um material completo (inclui foto/pdf base64) quando necessário
+// Retorna com todos os campos mapeados para frontend
 app.get('/materiais/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: 'ID inválido.' });
+    
     const [rows] = await pool.query('SELECT * FROM materiais WHERE id = ? LIMIT 1', [id]);
-    if (!Array.isArray(rows) || rows.length === 0) return res.status(404).json({ error: 'Material não encontrado.' });
-    return res.json(rows[0]);
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(404).json({ error: 'Material não encontrado.' });
+    }
+
+    const material = rows[0];
+    
+    // Mapeia campos para compatibilidade com frontend
+    const mapped = {
+      id: material.id,
+      nome_material: material.nome || material.nome_material,
+      numero_serie: material.numero_serie,
+      modelo: material.modelo,
+      fabricante: material.fabricante,
+      data_fabrico: material.data_fabrico,
+      infor_ad: material.infor_ad,
+      perfil_fabricante: material.perfil_fabricante,
+      foto: material.foto,
+      pdf: material.pdf,
+      created_at: material.created_at,
+      // campos legais
+      descricao: material.infor_ad,
+      code_id: material.id,
+    };
+
+    console.log(`[GET /materiais/:id] fetched material id=${id}`);
+    return res.json(mapped);
   } catch (err) {
     handleError(res, err);
   }
@@ -433,38 +484,91 @@ app.post('/materiais', authenticateToken, upload.fields([{ name: 'foto', maxCoun
   }
 });
 
-// Atualizar material por id (aceita JSON com campos a atualizar)
-app.put('/materiais/:id', authenticateToken, async (req, res) => {
+// Atualizar material por id (suporta JSON + multipart/form-data)
+app.put('/materiais/:id', authenticateToken, upload.fields([{ name: 'foto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: 'ID inválido.' });
 
-    // Aceita payload JSON com quaisquer colunas permitidas
-    const allowed = ['nome','numero_serie','modelo','fabricante','data_fabrico','infor_ad','perfil_fabricante','foto','pdf'];
+    // Verifica se o material existe
+    const [existing] = await pool.query('SELECT * FROM materiais WHERE id = ? LIMIT 1', [id]);
+    if (!Array.isArray(existing) || existing.length === 0) {
+      return res.status(404).json({ error: 'Material não encontrado.' });
+    }
+    const currentMaterial = existing[0];
+
+    // Processa arquivo de foto se enviado
+    let fotoData = undefined;
+    if (req.files?.foto?.[0]?.buffer) {
+      const fotoBuffer = req.files.foto[0].buffer;
+      const fotoMimeType = req.files.foto[0].mimetype || 'image/jpeg';
+      fotoData = `data:${fotoMimeType};base64,${fotoBuffer.toString('base64')}`;
+    }
+
+    // Processa arquivo de PDF se enviado
+    let pdfData = undefined;
+    if (req.files?.pdf?.[0]?.buffer) {
+      const pdfBuffer = req.files.pdf[0].buffer;
+      pdfData = `data:application/pdf;base64,${pdfBuffer.toString('base64')}`;
+    }
+
+    // Campos permitidos para atualização
+    const allowed = ['nome', 'numero_serie', 'modelo', 'fabricante', 'data_fabrico', 'infor_ad', 'perfil_fabricante'];
     const updates = [];
     const params = [];
+
+    // Processa campos de texto
     for (const key of allowed) {
-      if (Object.prototype.hasOwnProperty.call(req.body, key)) {
+      if (Object.prototype.hasOwnProperty.call(req.body, key) && req.body[key] !== undefined) {
         updates.push(`${key} = ?`);
-        params.push(req.body[key] === '' ? null : req.body[key]);
+        params.push(req.body[key] === '' ? null : String(req.body[key]));
       }
+    }
+
+    // Adiciona arquivos se foram processados
+    if (fotoData !== undefined) {
+      updates.push('foto = ?');
+      params.push(fotoData);
+    }
+
+    if (pdfData !== undefined) {
+      updates.push('pdf = ?');
+      params.push(pdfData);
     }
 
     if (updates.length === 0) {
       return res.status(400).json({ error: 'Nenhum campo para atualizar.' });
     }
 
+    // Verifica numero_serie único (se foi enviado e é diferente do atual)
+    if (req.body.numero_serie && String(req.body.numero_serie) !== String(currentMaterial.numero_serie)) {
+      const [dupCheck] = await pool.query(
+        'SELECT id FROM materiais WHERE numero_serie = ? AND id != ? LIMIT 1',
+        [req.body.numero_serie, id]
+      );
+      if (Array.isArray(dupCheck) && dupCheck.length > 0) {
+        return res.status(409).json({ error: 'Número de série já cadastrado por outro material.' });
+      }
+    }
+
     params.push(id);
     const sql = `UPDATE materiais SET ${updates.join(', ')} WHERE id = ?`;
+    
     const [result] = await pool.query(sql, params);
 
-    // retorna registro atualizado
+    // Retorna registro completo atualizado
     const [rows] = await pool.query('SELECT * FROM materiais WHERE id = ? LIMIT 1', [id]);
-    if (!Array.isArray(rows) || rows.length === 0) return res.status(404).json({ error: 'Material não encontrado.' });
-    return res.json({ message: 'Atualizado com sucesso.', material: rows[0] });
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(404).json({ error: 'Material não encontrado após atualização.' });
+    }
+
+    console.log(`[PUT /materiais/:id] updated material id=${id} by user=${req.user.sub}`);
+    return res.json({ message: 'Material atualizado com sucesso.', material: rows[0] });
   } catch (err) {
     console.error('Erro ao atualizar material:', err && err.stack ? err.stack : err);
-    if (err && err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Número de série já cadastrado.' });
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Número de série já cadastrado.' });
+    }
     return handleError(res, err);
   }
 });
